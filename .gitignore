@@ -1,0 +1,8 @@
+.env
+credentials.json
+gmail_token.pickle
+processed_emails.json
+arena_notifier.log
+__pycache__/
+*.pyc
+.DS_Store
