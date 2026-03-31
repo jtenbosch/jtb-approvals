@@ -12,6 +12,7 @@ import json
 import pickle
 import re
 import base64
+import html as html_lib
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
@@ -92,6 +93,14 @@ def save_processed(processed: set):
 # ---------------------------------------------------------------------------
 # Email parsing helpers
 # ---------------------------------------------------------------------------
+
+def strip_html(text: str) -> str:
+    """Strip HTML tags and unescape entities, collapsing whitespace."""
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html_lib.unescape(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 
 def get_message_body(msg) -> str:
     """Extract plain-text body from a Gmail message."""
@@ -193,35 +202,44 @@ def process_arena_emails(service, processed: set, lookback_days: int) -> list:
 
         msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
         body = get_message_body(msg)
+        body_text = strip_html(body)
         subject = get_header(msg, "subject")
 
         # Parse change number e.g. AB-123456
         change_number = ""
-        cn_match = re.search(r"\b([A-Z]{2}-\d+)\b", subject + " " + body)
+        cn_match = re.search(r"\b([A-Z]{2,3}-\d+)\b", subject + " " + body_text)
         if cn_match:
             change_number = cn_match.group(1)
 
-        # Parse title — first non-empty line after "Change Order" or subject fallback
-        title = subject.replace("Approval Required", "").replace("-", "").strip()
-        title_match = re.search(r"Title[:\s]+(.+)", body)
+        # Parse title from stripped body; fall back to subject
+        title = subject.replace("Approval Required", "").strip(" -")
+        title_match = re.search(r"Title[:\s]+(.+?)(?=\s{2,}|Description[:\s]|User Comments|Modified Items|View Change|$)", body_text)
         if title_match:
             title = title_match.group(1).strip()
 
-        # Parse Arena link
+        # Parse Arena link (detail-summary page on app.bom.com)
         link = ""
-        link_match = re.search(r"(https?://app\.arenasolutions\.com/\S+)", body)
+        link_match = re.search(r'href=["\']?(https?://app\.bom\.com/(?:changes/detail-summary|quality/detail-phases)[^"\'>\s]+)', body)
         if link_match:
-            link = link_match.group(1).rstrip(".")
+            link = link_match.group(1)
+
+        # Parse description
+        description = ""
+        desc_match = re.search(r"Description[:\s]+(.+?)(?=\s{2,}|User Comments|Modified Items|View Change|$)", body_text)
+        if desc_match:
+            description = desc_match.group(1).strip()
 
         summary = generate_summary(title)
-        parts = [f":white_check_mark: *Arena Approval Required*"]
-        if change_number:
+        parts = [f":writing_hand: *Arena Approval Required*"]
+        if change_number and link:
+            parts.append(f"*Change:* <{link}|{change_number}>")
+        elif change_number:
             parts.append(f"*Change:* {change_number}")
         parts.append(f"*Title:* {title}")
+        if description:
+            parts.append(f"\n*Description:* {description}")
         if summary:
             parts.append(summary)
-        if link:
-            parts.append(f"*Link:* {link}")
 
         message = "\n".join(parts)
         new_notifications.append((msg_id, message))
